@@ -1,0 +1,82 @@
+# ===
+stages:
+  - Build
+  - Harbor
+  - Deploy
+
+variables:
+    SERVICE_NAME: php-robot
+    IMAGE: harbor.smter.ru/php-k8s/${SERVICE_NAME}
+
+.k8s_prepare:
+  image: dtzar/helm-kubectl:3.15.3
+  before_script:
+    - mkdir -p ~/.kube
+    - cat "$KUBECONFIG_STAGE" > ~/.kube/config
+
+# ===
+Docker:
+  stage: Build
+  image: docker:20.10
+  artifacts:
+    paths:
+      - image.tar.gz
+    expire_in: 8 hrs
+  script:
+    - docker build --pull --build-arg version=$CI_COMMIT_SHORT_SHA -t "${IMAGE}:${CI_COMMIT_REF_SLUG}" $CI_PROJECT_DIR
+    - docker save "${IMAGE}:${CI_COMMIT_REF_SLUG}" | gzip > "image.tar.gz"
+  when: manual
+  only:
+  - master
+
+
+Harbor:
+  stage: Harbor
+  image: docker:20.10
+  script:
+    - docker login -u ${HARBOR_USER} -p ${HARBOR_PASS} ${HARBOR_SERVER}
+    - docker load < "image.tar.gz"
+    - docker tag "${IMAGE}:${CI_COMMIT_REF_SLUG}" "${IMAGE}:latest"
+    - docker push "${IMAGE}:latest"
+  dependencies:
+    - Docker
+  when: manual
+  only:
+  - master
+
+
+K8s STAGE:
+  stage: Deploy
+  variables:
+    SERVICE_DOMAIN: robot.qsiq.tech 
+  extends: .k8s_prepare
+  script:
+    # NAMESPACE
+    - |
+      if ! kubectl get namespace "${SERVICE_NAME}" >/dev/null 2>&1; then
+        kubectl create namespace "${SERVICE_NAME}"
+        # HARBOR ACCESS FROM K8S
+        kubectl create secret docker-registry harbor-secret \
+        -n ${SERVICE_NAME} \
+        --docker-server=$HARBOR_SERVER \
+        --docker-username=$HARBOR_USER \
+        --docker-password=$HARBOR_PASS
+      fi
+
+    # --- API
+    # ENV
+    - kubectl create configmap ${SERVICE_NAME}-env -n ${SERVICE_NAME} --from-env-file=${ENV_API} --dry-run=client -o yaml > configmap.yaml
+    - kubectl apply -n ${SERVICE_NAME} -f configmap.yaml
+    # DEPLOYMENT
+    - envsubst < k8s/deployment.yaml > deployment.yaml
+    - kubectl apply -n ${SERVICE_NAME} -f deployment.yaml
+    # INGRESS
+    - envsubst < k8s/ingress.yaml > ingress.yaml
+    - kubectl apply -n ${SERVICE_NAME} -f ingress.yaml
+    - kubectl rollout restart deployment ${SERVICE_NAME} -n ${SERVICE_NAME}
+    # DISPLAY INFO
+    - kubectl get all -n ${SERVICE_NAME}
+  when: manual
+  only:
+  - master
+
