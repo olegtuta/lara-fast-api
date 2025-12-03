@@ -1,5 +1,3 @@
-<a>https://gitlab.smter.ru/php-k8s/lara-template</a> 
-
 ## Шаблон Laravel приложения под Nginx Unit для K8s
 
 ### Структура приложения 
